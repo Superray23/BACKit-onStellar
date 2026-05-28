@@ -19,11 +19,11 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   }, [toast.status, onDismiss]);
 
   return (
-    <div className={}>
+    <div className={`border rounded-lg p-3 mb-2 text-sm shadow-md ${COLORS[toast.status]}`}>
       <div className="flex justify-between items-center gap-2">
         <span className="font-semibold capitalize">{toast.status}</span>
         {toast.txHash && (
-          <a href={} target="_blank" rel="noreferrer" className="underline text-xs">View tx</a>
+          <a href={`https://stellar.expert/explorer/public/tx/${toast.txHash}`} target="_blank" rel="noreferrer" className="underline text-xs">View tx</a>
         )}
         {toast.status === "failed" && (
           <button onClick={onDismiss} className="text-xs underline">Dismiss</button>
@@ -37,7 +37,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
 export function useTransactionToast() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const add = useCallback((data: Omit<Toast, "id">): string => {
-    const id = ;
+    const id = `${Date.now()}-${Math.random()}`;
     setToasts((p) => [...p.slice(-2), { ...data, id }]);
     return id;
   }, []);
