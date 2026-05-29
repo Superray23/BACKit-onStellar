@@ -52,21 +52,23 @@ jobs:
             CURL_ARGS+=(-H "Authorization: Bearer $GITHUB_TOKEN")
           fi
 
+          # Note: do not use `curl | python3 <<'EOF'` — the heredoc replaces stdin,
+          # so Python never sees the API response (curl then fails with exit 23).
           STELLAR_TAG="$(
             curl "${CURL_ARGS[@]}" --fail --retry 3 --retry-connrefused \
               "https://api.github.com/repos/stellar/stellar-cli/releases/latest" |
-            python3 << 'EOF'
-          import json, sys
-          try:
-              data = json.load(sys.stdin)
-              tag = data.get('tag_name')
-              if not tag:
-                  msg = data.get('message') or 'GitHub API returned no tag_name'
-                  raise SystemExit(f'Failed to fetch stellar-cli latest release tag_name: {msg}')
-              print(tag)
-          except json.JSONDecodeError as e:
-              raise SystemExit(f'Failed to parse GitHub API response: {e}')
-          EOF
+            python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    tag = data.get('tag_name')
+    if not tag:
+        msg = data.get('message') or 'GitHub API returned no tag_name'
+        raise SystemExit(f'Failed to fetch stellar-cli latest release tag_name: {msg}')
+    print(tag)
+except json.JSONDecodeError as e:
+    raise SystemExit(f'Failed to parse GitHub API response: {e}')
+"
           )"
           STELLAR_VERSION="${STELLAR_TAG#v}"
           STELLAR_URL="https://github.com/stellar/stellar-cli/releases/download/${STELLAR_TAG}/stellar-cli-${STELLAR_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
