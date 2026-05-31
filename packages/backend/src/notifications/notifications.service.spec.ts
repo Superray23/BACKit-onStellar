@@ -148,7 +148,7 @@ describe('NotificationsService', () => {
     beforeEach(() => {
       repo.create.mockReturnValue(mockNotification);
       repo.save.mockResolvedValue(mockNotification);
-      const prefService = module.get(NotificationPreferencesService);
+      const prefService = module.get(NotificationPreferencesService) as jest.Mocked<NotificationPreferencesService>;
       prefService.checkPreference.mockImplementation(
         async (address, type, channel) => {
           return channel === NotificationChannel.IN_APP;
@@ -181,7 +181,7 @@ describe('NotificationsService', () => {
     let preferenceService: jest.Mocked<NotificationPreferencesService>;
 
     beforeEach(() => {
-      preferenceService = module.get(NotificationPreferencesService);
+      preferenceService = module.get(NotificationPreferencesService) as jest.Mocked<NotificationPreferencesService>;
       repo.create.mockImplementation((dto: any) => ({
         ...mockNotification,
         ...dto,
