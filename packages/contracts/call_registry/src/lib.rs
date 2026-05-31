@@ -9,6 +9,8 @@ mod storage;
 mod types;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod fuzz_tests;
 
 use backit_shared::{is_valid_outcome, OUTCOME_DOWN, OUTCOME_UP};
 use errors::CallRegistryError;
