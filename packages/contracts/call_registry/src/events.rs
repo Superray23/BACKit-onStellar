@@ -196,3 +196,11 @@ pub fn emit_void_refund_claimed(env: &Env, call_id: u64, staker: &Address, amoun
         (call_id, staker.clone(), amount),
     );
 }
+
+/// Emitted when instance entry count exceeds the warning threshold.
+pub fn emit_storage_warning(env: &Env, entry_count: u32, estimated_bytes: u32) {
+    env.events().publish(
+        ("call_registry", "storage_warning"),
+        (entry_count, estimated_bytes),
+    );
+}

@@ -1,4 +1,4 @@
-use crate::types::{Call, ContractConfig, GlobalStats, CreatorStats};
+use crate::types::{Call, ContractConfig, GlobalStats, CreatorStats, StorageStats};
 use soroban_sdk::{contracttype, Address, Env};
 
 // ~120 days in ledgers (5s per ledger): 120 * 24 * 3600 / 5 = 2_073_600
@@ -22,11 +22,16 @@ pub enum DataKey {
     UpStakerCount(u64),
     DownStakerCount(u64),
     VoidRefundClaimed(u64, Address),
+    InstanceEntryCount,
 }
 
 /// Store contract configuration
 pub fn set_config(env: &Env, config: &ContractConfig) {
+    let is_new = !env.storage().instance().has(&DataKey::Config);
     env.storage().instance().set(&DataKey::Config, config);
+    if is_new {
+        inc_instance_entry_count(env, 1);
+    }
 }
 
 /// Retrieve contract configuration
@@ -43,6 +48,10 @@ pub fn next_call_id(env: &Env) -> u64 {
         .unwrap_or(0);
 
     let next_id = counter + 1;
+    if counter == 0 {
+        // First write of CallCounter key
+        inc_instance_entry_count(env, 1);
+    }
     env.storage()
         .instance()
         .set(&DataKey::CallCounter, &next_id);
@@ -131,9 +140,13 @@ pub fn get_global_stats(env: &Env) -> GlobalStats {
 }
 
 pub fn record_call_created(env: &Env) {
+    let is_new = !env.storage().instance().has(&DataKey::GlobalStats);
     let mut stats = get_global_stats(env);
     stats.total_calls += 1;
     env.storage().instance().set(&DataKey::GlobalStats, &stats);
+    if is_new {
+        inc_instance_entry_count(env, 1);
+    }
 }
 
 pub fn record_stake(env: &Env, staker: &Address, amount: i128) {
@@ -249,9 +262,12 @@ pub fn set_creator_stats(env: &Env, creator: &Address, stats: &CreatorStats) {
 
 /// Mark that a staker has claimed their void refund for a call
 pub fn set_void_refund_claimed(env: &Env, call_id: u64, staker: &Address) {
-    env.storage()
-        .instance()
-        .set(&DataKey::VoidRefundClaimed(call_id, staker.clone()), &true);
+    let key = DataKey::VoidRefundClaimed(call_id, staker.clone());
+    let is_new = !env.storage().instance().has(&key);
+    env.storage().instance().set(&key, &true);
+    if is_new {
+        inc_instance_entry_count(env, 1);
+    }
 }
 
 /// Check whether a staker has already claimed their void refund
@@ -259,4 +275,36 @@ pub fn is_void_refund_claimed(env: &Env, call_id: u64, staker: &Address) -> bool
     env.storage()
         .instance()
         .has(&DataKey::VoidRefundClaimed(call_id, staker.clone()))
+}
+
+// ── Instance entry counter ────────────────────────────────────────────────────
+
+/// Increment the instance entry counter by `delta` (call when adding new instance keys).
+pub fn inc_instance_entry_count(env: &Env, delta: u32) {
+    let current: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::InstanceEntryCount)
+        .unwrap_or(0);
+    env.storage()
+        .instance()
+        .set(&DataKey::InstanceEntryCount, &(current + delta));
+}
+
+/// Return the number of tracked instance storage entries.
+pub fn get_instance_entry_count(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::InstanceEntryCount)
+        .unwrap_or(0)
+}
+
+/// Return a storage utilisation snapshot.
+pub fn get_storage_stats(env: &Env) -> StorageStats {
+    let instance_entry_count = get_instance_entry_count(env);
+    StorageStats {
+        call_count: get_call_counter(env),
+        instance_entry_count,
+        estimated_instance_bytes: instance_entry_count * 128,
+    }
 }

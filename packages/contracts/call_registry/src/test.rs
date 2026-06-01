@@ -1982,5 +1982,88 @@ mod call_registry {
         assert_eq!(stats.total_resolved, 3);
         assert_eq!(stats.total_correct, 2);
     }
+
+    // ── Storage Stats ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_storage_stats_after_initialize() {
+        let (_env, client, _admin, _om) = setup();
+        let stats = client.get_storage_stats();
+        // After initialize: Config + version = 2 instance entries
+        assert_eq!(stats.call_count, 0);
+        assert_eq!(stats.instance_entry_count, 2);
+        assert_eq!(stats.estimated_instance_bytes, 2 * 128);
+    }
+
+    #[test]
+    fn test_get_instance_entry_count_after_initialize() {
+        let (_env, client, _admin, _om) = setup();
+        assert_eq!(client.get_instance_entry_count(), 2);
+    }
+
+    #[test]
+    fn test_storage_stats_call_count_increments_after_create() {
+        let (env, client, _admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+
+        let creator = Address::generate(&env);
+        let stake_token = env.register_contract(None, MockToken);
+        let token_address = Address::generate(&env);
+        let pair_id = Bytes::from_slice(&env, b"USDC/XLM");
+        let ipfs_cid = Bytes::from_slice(&env, b"QmXxxx");
+
+        create_call_with_default_condition(
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &2000u64, &token_address, &pair_id, &ipfs_cid,
+        );
+        create_call_with_default_condition(
+            &client, &creator, &stake_token, &100_000_000_i128,
+            &3000u64, &token_address, &pair_id, &ipfs_cid,
+        );
+
+        let stats = client.get_storage_stats();
+        assert_eq!(stats.call_count, 2);
+        // Config + version + CallCounter + GlobalStats = 4
+        assert_eq!(stats.instance_entry_count, 4);
+        assert_eq!(stats.estimated_instance_bytes, 4 * 128);
+    }
+
+    #[test]
+    fn test_storage_stats_instance_entry_count_increases_with_void_refund() {
+        let (env, client, _admin, _om) = setup();
+        env.ledger().set_timestamp(1000);
+        let creator = Address::generate(&env);
+        let staker = Address::generate(&env);
+        let (call, stake_token) = make_call(&env, &client, &creator);
+
+        mint(&env, &stake_token, &staker, 100_000_000_i128);
+        client.stake_on_call(&staker, &call.id, &50_000_000_i128, &1);
+
+        let before = client.get_instance_entry_count();
+        client.void_call(&call.id);
+        client.claim_void_refund(&staker, &call.id);
+        let after = client.get_instance_entry_count();
+
+        // One new VoidRefundClaimed entry added
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_storage_stats_no_warning_below_threshold() {
+        let (env, client, _admin, _om) = setup();
+        // Well below 500 entries — get_storage_stats should not emit storage_warning
+        let stats = client.get_storage_stats();
+        assert!(stats.instance_entry_count < 500);
+
+        let events = env.events().all();
+        let has_warning = events.iter().any(|e| {
+            e.1 == soroban_sdk::vec![
+                &env,
+                "call_registry".into_val(&env),
+                "storage_warning".into_val(&env),
+            ]
+        });
+        assert!(!has_warning);
+    }
 }
 

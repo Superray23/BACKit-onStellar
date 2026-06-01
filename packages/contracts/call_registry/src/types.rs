@@ -129,3 +129,18 @@ pub struct CreatorStats {
     pub total_resolved: u32,
     pub total_correct: u32,
 }
+
+/// Instance storage is capped at 64 KB. Warn when entry count exceeds this.
+pub const INSTANCE_ENTRY_WARNING_THRESHOLD: u32 = 500;
+
+/// Storage utilisation snapshot returned by `get_storage_stats`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct StorageStats {
+    /// Total calls ever created (mirrors CallCounter).
+    pub call_count: u64,
+    /// Number of entries currently tracked in instance storage.
+    pub instance_entry_count: u32,
+    /// Rough byte estimate for instance storage (entry_count × 128 bytes).
+    pub estimated_instance_bytes: u32,
+}
