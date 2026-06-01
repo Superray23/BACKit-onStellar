@@ -11,6 +11,7 @@ pub fn emit_call_created(
     creator: &Address,
     stake_token: &Address,
     stake_amount: i128,
+    start_price: i128,
     end_ts: u64,
     token_address: &Address,
     pair_id: &Bytes,
@@ -24,6 +25,7 @@ pub fn emit_call_created(
             creator.clone(),
             stake_token.clone(),
             stake_amount,
+            start_price,
             end_ts,
             token_address.clone(),
             pair_id.clone(),
@@ -196,5 +198,13 @@ pub fn emit_void_refund_claimed(env: &Env, call_id: u64, staker: &Address, amoun
     env.events().publish(
         ("call_registry", "void_refund_claimed"),
         (call_id, staker.clone(), amount),
+    );
+}
+
+/// Emitted when instance entry count exceeds the warning threshold.
+pub fn emit_storage_warning(env: &Env, entry_count: u32, estimated_bytes: u32) {
+    env.events().publish(
+        ("call_registry", "storage_warning"),
+        (entry_count, estimated_bytes),
     );
 }

@@ -9,6 +9,8 @@ mod storage;
 mod types;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod fuzz_tests;
 
 use backit_shared::{is_valid_outcome, OUTCOME_DOWN, OUTCOME_UP};
 use errors::CallRegistryError;
@@ -23,6 +25,13 @@ pub const CONTRACT_VERSION: u32 = 1;
 /// Manages prediction calls and staking on market outcomes.
 #[contract]
 pub struct CallRegistry;
+
+fn build_start_price_message(env: &Env, call_id: u64, price: i128) -> Bytes {
+    let mut raw = Bytes::from_slice(env, b"start_price:");
+    raw.append(&Bytes::from_slice(env, &call_id.to_be_bytes()));
+    raw.append(&Bytes::from_slice(env, &price.to_be_bytes()));
+    raw
+}
 
 fn evaluate_condition_impl(condition: &ConditionType, start_price: i128, end_price: i128) -> bool {
     match condition {
@@ -81,6 +90,8 @@ impl CallRegistry {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, "version"), &CONTRACT_VERSION);
+        // Track the 'version' instance key (Config key tracked inside set_config)
+        inc_instance_entry_count(&env, 1);
         extend_storage_ttl(&env);
 
         env.events()
@@ -99,6 +110,7 @@ impl CallRegistry {
         creator: Address,
         stake_token: Address,
         stake_amount: i128,
+        start_price: i128,
         end_ts: u64,
         token_address: Address,
         pair_id: Bytes,
@@ -111,6 +123,9 @@ impl CallRegistry {
         let config = get_config(&env).ok_or(CallRegistryError::NotInitialized)?;
         assert!(!config.paused, "Contract is paused");
         if stake_amount < config.min_stake || stake_amount <= 0 {
+            return Err(CallRegistryError::InvalidStakeAmount);
+        }
+        if start_price <= 0 {
             return Err(CallRegistryError::InvalidStakeAmount);
         }
 
@@ -155,7 +170,7 @@ impl CallRegistry {
             outcome_stakes,
             stakes,
             outcome: 0,
-            start_price: 0,
+            start_price,
             end_price: 0,
             condition,
             settled: false,
@@ -167,6 +182,12 @@ impl CallRegistry {
 
         set_call(&env, &call);
         record_call_created(&env);
+        
+        // Track creator reputation: increment total_created
+        let mut creator_stats = get_creator_stats(&env, &creator);
+        creator_stats.total_created += 1;
+        set_creator_stats(&env, &creator, &creator_stats);
+        
         extend_storage_ttl(&env);
 
         emit_call_created(
@@ -175,6 +196,7 @@ impl CallRegistry {
             &creator,
             &stake_token,
             stake_amount,
+            start_price,
             end_ts,
             &token_address,
             &pair_id,
@@ -313,7 +335,7 @@ impl CallRegistry {
         let token_client = token::Client::new(&env, &call.stake_token);
         token_client.transfer(&staker, &env.current_contract_address(), &amount);
 
-        // Update stake maps
+        // Update stake maps with generalized position support
         let current_total = call.outcome_stakes.get(position).unwrap_or(0);
         call.outcome_stakes.set(position, current_total + amount);
 
@@ -322,6 +344,7 @@ impl CallRegistry {
         outcome_stakers.set(staker.clone(), current_staker_stake + amount);
         call.stakes.set(position, outcome_stakers);
 
+        add_call_staker(&env, call_id, &staker);
         set_user_stake(&env, call_id, &staker, position, current_staker_stake + amount);
 
         set_call(&env, &call);
@@ -388,6 +411,23 @@ impl CallRegistry {
 
         call.outcome = outcome;
         call.end_price = end_price;
+
+        // Track creator reputation: increment total_resolved and conditionally total_correct
+        let mut creator_stats = get_creator_stats(&env, &call.creator);
+        creator_stats.total_resolved += 1;
+        
+        // Check if creator staked on the winning position
+        let creator_winning_stake = match outcome {
+            OUTCOME_UP => get_user_stake(&env, call.id, &call.creator, 1),
+            OUTCOME_DOWN => get_user_stake(&env, call.id, &call.creator, 2),
+            _ => 0,
+        };
+        
+        if creator_winning_stake > 0 {
+            creator_stats.total_correct += 1;
+        }
+        
+        set_creator_stats(&env, &call.creator, &creator_stats);
 
         set_call(&env, &call);
         extend_storage_ttl(&env);
@@ -588,6 +628,11 @@ impl CallRegistry {
         })
     }
 
+    /// Get creator reputation statistics
+    pub fn get_creator_stats_view(env: Env, creator: Address) -> CreatorStats {
+        get_creator_stats(&env, &creator)
+    }
+
     /// Get all calls a staker has participated in.
     pub fn get_staker_calls(env: Env, staker: Address) -> Vec<Call> {
         let call_ids = get_staker_calls(&env, &staker);
@@ -600,6 +645,18 @@ impl CallRegistry {
         }
 
         calls
+    }
+
+    /// Get all stakers that have participated in a call.
+    pub fn get_call_stakers(env: Env, call_id: u64) -> Result<Vec<Address>, CallRegistryError> {
+        get_call(&env, call_id).ok_or(CallRegistryError::CallNotFound)?;
+        Ok(storage::get_call_stakers(&env, call_id))
+    }
+
+    /// Get the number of unique stakers that have participated in a call.
+    pub fn get_call_staker_count(env: Env, call_id: u64) -> Result<u32, CallRegistryError> {
+        get_call(&env, call_id).ok_or(CallRegistryError::CallNotFound)?;
+        Ok(storage::get_call_stakers(&env, call_id).len() as u32)
     }
 
     /// Get the stake amount a staker has on a specific call position.
@@ -638,6 +695,58 @@ impl CallRegistry {
     /// Get contract-wide aggregated statistics.
     pub fn get_global_stats(env: Env) -> GlobalStats {
         storage::get_global_stats(&env)
+    }
+
+    /// Set or correct a call's start price using an oracle-signed payload.
+    pub fn set_start_price(
+        env: Env,
+        call_id: u64,
+        price: i128,
+        oracle_pubkey: BytesN<32>,
+        signature: BytesN<64>,
+    ) -> Result<Call, CallRegistryError> {
+        if price <= 0 {
+            return Err(CallRegistryError::InvalidStakeAmount);
+        }
+
+        let config = get_config(&env).ok_or(CallRegistryError::NotInitialized)?;
+        config.outcome_manager.require_auth();
+
+        let mut call = get_call(&env, call_id).ok_or(CallRegistryError::CallNotFound)?;
+        if call.settled {
+            return Err(CallRegistryError::CallSettled);
+        }
+        if call.cancelled {
+            panic!("Call has been cancelled");
+        }
+        if call.voided {
+            panic!("Call has been voided");
+        }
+
+        let message = build_start_price_message(&env, call_id, price);
+        env.crypto()
+            .ed25519_verify(&oracle_pubkey, &message, &signature);
+
+        call.start_price = price;
+        set_call(&env, &call);
+        extend_storage_ttl(&env);
+
+        Ok(call)
+    }
+
+    /// Return the number of entries currently tracked in instance storage.
+    pub fn get_instance_entry_count(env: Env) -> u32 {
+        storage::get_instance_entry_count(&env)
+    }
+
+    /// Return a storage utilisation snapshot.
+    /// Emits `StorageWarning` if instance entries exceed the threshold.
+    pub fn get_storage_stats(env: Env) -> StorageStats {
+        let stats = storage::get_storage_stats(&env);
+        if stats.instance_entry_count >= INSTANCE_ENTRY_WARNING_THRESHOLD {
+            events::emit_storage_warning(&env, stats.instance_entry_count, stats.estimated_instance_bytes);
+        }
+        stats
     }
 
     /// Return the current contract version.

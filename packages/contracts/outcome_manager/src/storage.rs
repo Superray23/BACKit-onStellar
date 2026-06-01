@@ -29,10 +29,20 @@ pub struct SignedOutcome {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleVote {
+    pub oracle: BytesN<32>,
+    pub outcome: u32,
+    pub price: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub enum InstanceKey {
     Admin,
     Oracles,
+    OracleList,
     Quorum,
     FinalOutcome(u64),
     Claimed(u64, Address),
@@ -43,7 +53,14 @@ pub enum InstanceKey {
     DisputeWindow,
     PendingOutcome(u64),     // stores Outcome after quorum, before finalization
     DisputeWindowStart(u64), // ledger timestamp when quorum was reached
+    Paused,                  // Emergency pause flag for rogue oracle detection
     Version,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub enum PersistentKey {
+    Votes(u64),
 }
 
 
@@ -88,4 +105,17 @@ pub fn get_dispute_window(env: &Env) -> u64 {
         .instance()
         .get(&InstanceKey::DisputeWindow)
         .unwrap_or(3600)
+}
+
+pub fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&InstanceKey::Paused)
+        .unwrap_or(false)
+}
+
+pub fn set_paused(env: &Env, paused: bool) {
+    env.storage()
+        .instance()
+        .set(&InstanceKey::Paused, &paused);
 }
