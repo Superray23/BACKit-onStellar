@@ -10,7 +10,7 @@ async function errors(cls: any, plain: object) {
   return validate(plainToInstance(cls, plain));
 }
 
-const VALID_STELLAR = 'GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGZW5BQNL3QJBA4RDHKHRD';
+const VALID_STELLAR = 'GBZNLMUQMIN3VGUJISCHKMMTNMDSYFZLHFB5BKRH2HZ7ZBYXUQYXQZWX';
 
 // ─── 1. CreateCallDto ─────────────────────────────────────────────────────────
 describe('CreateCallDto validation (endpoint: POST /calls)', () => {

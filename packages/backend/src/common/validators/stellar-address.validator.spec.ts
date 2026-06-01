@@ -14,7 +14,7 @@ async function validateAddress(address: string) {
 
 describe('IsStellarAddress', () => {
   it('accepts a valid Stellar address', async () => {
-    const errors = await validateAddress('GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGZW5BQNL3QJBA4RDHKHRD');
+    const errors = await validateAddress('GBZNLMUQMIN3VGUJISCHKMMTNMDSYFZLHFB5BKRH2HZ7ZBYXUQYXQZWX');
     expect(errors).toHaveLength(0);
   });
 

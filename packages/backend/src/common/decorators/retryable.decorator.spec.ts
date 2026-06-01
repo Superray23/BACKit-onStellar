@@ -20,12 +20,14 @@ class TestService {
 }
 
 describe('Retryable', () => {
-  beforeEach(() => jest.clearAllTimers());
+  beforeEach(() => {
+    jest.clearAllTimers();
+  });
 
   it('returns result on first try', async () => {
     const svc = new TestService();
     const p = svc.flakyMethod(0);
-    jest.runAllTimers();
+    await jest.runAllTimersAsync();
     await expect(p).resolves.toBe('success');
     expect(svc.callCount).toBe(1);
   });
@@ -33,15 +35,18 @@ describe('Retryable', () => {
   it('retries and succeeds after failures', async () => {
     const svc = new TestService();
     const p = svc.flakyMethod(2);
-    jest.runAllTimers();
+    await jest.runAllTimersAsync();
     await expect(p).resolves.toBe('success');
     expect(svc.callCount).toBe(3);
   });
 
   it('throws after all retries exhausted', async () => {
     const svc = new TestService();
-    const p = svc.alwaysFails();
-    jest.runAllTimers();
-    await expect(p).rejects.toThrow('always fails');
+    // Attach catch before running timers to avoid unhandled rejection warning
+    const caught = svc.alwaysFails().catch((e: unknown) => e);
+    await jest.runAllTimersAsync();
+    const result = await caught;
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toBe('always fails');
   });
 });
