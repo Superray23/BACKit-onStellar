@@ -332,3 +332,11 @@ pub fn emit_shares_transferred(
         (call_id, from.clone(), to.clone(), outcome, amount),
     );
 }
+
+/// Emitted when a user successfully links their SEP-10-verified home domain.
+pub fn emit_sep10_verified(env: &Env, user: &Address, home_domain: &soroban_sdk::Bytes) {
+    env.events().publish(
+        ("call_registry", "sep10_verified"),
+        (user.clone(), home_domain.clone()),
+    );
+}
