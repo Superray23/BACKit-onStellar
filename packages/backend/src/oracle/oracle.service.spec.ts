@@ -641,5 +641,173 @@ describe('OracleService', () => {
         ],
       });
     });
+
+    /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+    it('getPriceSources handles live fetch errors gracefully', async () => {
+      const call = {
+        id: 14,
+        pairAddress: 'PAIR',
+        baseToken: 'XLM',
+        quoteToken: 'USDC',
+      };
+      oracleCallRepo.findOne.mockResolvedValue(call);
+      oracleHealthLogRepo.findOne.mockResolvedValue(null);
+      priceDeviationLogRepo.findOne.mockResolvedValue(null);
+
+      // Force PriceFetcher to throw
+      priceFetcherRepo.fetchPrice.mockRejectedValueOnce(
+        new Error('DexScreener API down'),
+      );
+
+      // Force fetchHorizonMidpoint to throw by making fetch reject
+      global.fetch = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Horizon API down')) as any;
+
+      coinGeckoRepo.getPrices.mockResolvedValueOnce({});
+
+      const res = await service.getPriceSources(14);
+      expect(res).toEqual({
+        callId: 14,
+        pairAddress: 'PAIR',
+        baseToken: 'XLM',
+        quoteToken: 'USDC',
+        sources: [
+          { source: 'DexScreener', value: null },
+          { source: 'Horizon SDEX', value: null },
+          { source: 'CoinGecko', value: null },
+        ],
+      });
+    });
+    /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
   });
+
+  /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+  describe('Branch Coverage Tests', () => {
+    it('getAssetParams matches yXLM', async () => {
+      const res = await (service as any).getAssetParams('yXLM');
+      expect(res).toEqual({
+        asset_type: 'credit_alphanum4',
+        asset_code: 'yXLM',
+        asset_issuer:
+          'GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55',
+      });
+    });
+
+    it('getAssetParams matches code:issuer format', async () => {
+      const res1 = await (service as any).getAssetParams(
+        'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      );
+      expect(res1).toEqual({
+        asset_type: 'credit_alphanum4',
+        asset_code: 'USDC',
+        asset_issuer:
+          'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      });
+
+      const res2 = await (service as any).getAssetParams(
+        'SUPERLONGCODE:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      );
+      expect(res2).toEqual({
+        asset_type: 'credit_alphanum12',
+        asset_code: 'SUPERLONGCODE',
+        asset_issuer:
+          'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      });
+    });
+
+    it('getAssetParams handles database token lookup and errors', async () => {
+      // Case 3a: Native token
+      tokenRepo.findOne.mockResolvedValueOnce({
+        assetCode: 'TESTNATIVE',
+        assetIssuer: null,
+      });
+      const res1 = await (service as any).getAssetParams('TESTNATIVE');
+      expect(res1).toEqual({ asset_type: 'native' });
+
+      // Case 3b: 4-char token
+      tokenRepo.findOne.mockResolvedValueOnce({
+        assetCode: 'TEST',
+        assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      });
+      const res2 = await (service as any).getAssetParams('TEST');
+      expect(res2).toEqual({
+        asset_type: 'credit_alphanum4',
+        asset_code: 'TEST',
+        asset_issuer:
+          'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      });
+
+      // Case 3c: 12-char token
+      tokenRepo.findOne.mockResolvedValueOnce({
+        assetCode: 'VERYLONGCODE',
+        assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      });
+      const res3 = await (service as any).getAssetParams('VERYLONGCODE');
+      expect(res3).toEqual({
+        asset_type: 'credit_alphanum12',
+        asset_code: 'VERYLONGCODE',
+        asset_issuer:
+          'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      });
+
+      // Case 3d: DB Error
+      tokenRepo.findOne.mockRejectedValueOnce(new Error('db down'));
+      const res4 = await (service as any).getAssetParams('OTHER');
+      expect(res4).toBeNull();
+    });
+
+    it('fetchHorizonMidpoint returns null when assets cannot be resolved', async () => {
+      tokenRepo.findOne.mockResolvedValue(null); // Resolve fails
+      const call = { baseToken: 'INVALID1', quoteToken: 'INVALID2' } as any;
+      const res = await (service as any).fetchHorizonMidpoint(call);
+      expect(res).toBeNull();
+    });
+
+    it('fetchHorizonMidpoint handles alphanumeric assets and constructs query parameters correctly', async () => {
+      let requestedUrl = '';
+      global.fetch = jest.fn().mockImplementation((url: string) => {
+        requestedUrl = url;
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              bids: [{ price: '0.5' }],
+              asks: [{ price: '0.6' }],
+            }),
+        });
+      }) as any;
+
+      const call = {
+        baseToken:
+          'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+        quoteToken: 'yXLM',
+      } as any;
+
+      const res = await (service as any).fetchHorizonMidpoint(call);
+      expect(res).toBe(0.55);
+      expect(requestedUrl).toContain('selling_asset_code=USDC');
+      expect(requestedUrl).toContain(
+        'selling_asset_issuer=GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      );
+      expect(requestedUrl).toContain('buying_asset_code=yXLM');
+      expect(requestedUrl).toContain(
+        'buying_asset_issuer=GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55',
+      );
+    });
+
+    it('fetchHorizonMidpoint returns null when Horizon API returns non-ok status', async () => {
+      global.fetch = jest.fn().mockImplementation(() =>
+        Promise.resolve({
+          ok: false,
+          status: 500,
+        }),
+      ) as any;
+
+      const call = { baseToken: 'XLM', quoteToken: 'yXLM' } as any;
+      const res = await (service as any).fetchHorizonMidpoint(call);
+      expect(res).toBeNull();
+    });
+  });
+  /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 });
