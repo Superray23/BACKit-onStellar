@@ -8,6 +8,7 @@ mod test;
 mod verification;
 
 use soroban_sdk::{contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, Map, Symbol, Vec};
+use soroban_sdk::xdr::ToXdr;
 
 use auth::require_admin;
 use backit_shared::{is_valid_fee_bps, is_valid_outcome};
