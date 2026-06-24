@@ -1,6 +1,7 @@
 #![no_std]
 
 mod auth;
+mod call_types;
 mod errors;
 mod events;
 mod storage;
@@ -12,6 +13,7 @@ use soroban_sdk::xdr::ToXdr;
 
 use auth::require_admin;
 use backit_shared::{is_valid_fee_bps, is_valid_outcome};
+use call_types::{Call, CallRegistryError};
 use errors::OutcomeError;
 use events::{
     emit_admin_params_changed, emit_batch_payout_started, emit_claimable_balance_created,
@@ -19,8 +21,8 @@ use events::{
     emit_outcome_submitted, emit_payout_claimed, emit_price_observation_submitted,
 };
 use storage::{
-    set_dispute_window, set_max_submission_delay, InstanceKey, OracleVote, Outcome, PersistentKey,
-    PriceObservation, SignedOutcome, TempKey,
+    set_dispute_window, set_max_submission_delay, InstanceKey, OracleVote, Outcome,
+    PersistentKey, PriceObservation, SignedOutcome, TempKey,
 };
 use verification::{build_message, verify_signature};
 
@@ -54,6 +56,34 @@ fn registry_release_escrow(
 fn registry_mark_settled(env: &Env, registry: &Address, call_id: u64) {
     let args = (call_id,).into_val(env);
     env.invoke_contract::<()>(registry, &Symbol::new(env, "mark_settled"), args);
+}
+
+/// Call `get_call(call_id)` on the CallRegistry and return the decoded Call.
+fn registry_get_call(env: &Env, registry: &Address, call_id: u64) -> Call {
+    let args = (call_id,).into_val(env);
+    let result: Result<Call, CallRegistryError> =
+        env.invoke_contract(registry, &Symbol::new(env, "get_call"), args);
+    match result {
+        Ok(call) => call,
+        Err(_) => soroban_sdk::panic_with_error!(env, OutcomeError::CallNotSettled),
+    }
+}
+
+/// Call `get_staker_stake(call_id, staker, position)` on the CallRegistry.
+fn registry_get_staker_stake(
+    env: &Env,
+    registry: &Address,
+    call_id: u64,
+    staker: &Address,
+    position: u32,
+) -> i128 {
+    let args = (call_id, staker.clone(), position).into_val(env);
+    let result: Result<i128, CallRegistryError> =
+        env.invoke_contract(registry, &Symbol::new(env, "get_staker_stake"), args);
+    match result {
+        Ok(stake) => stake,
+        Err(_) => 0,
+    }
 }
 
 // ─── Pause helper ─────────────────────────────────────────────────────────────
@@ -566,8 +596,8 @@ impl OutcomeManager {
         let mut aggregated_fee_share = 0_i128;
         for i in 0..stakers.len() {
             let staker = stakers.get(i).unwrap();
-            let staker_winning_stake = stakes.get(i).unwrap();
 
+            let staker_winning_stake = stakes.get(i).unwrap();
             if staker_winning_stake <= 0 {
                 soroban_sdk::panic_with_error!(&env, OutcomeError::NothingToClaim);
             }

@@ -2,8 +2,12 @@
 
 extern crate std;
 
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, BytesN, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, testutils::Address as _, Address, Bytes, BytesN, Env, Map,
+    Vec,
+};
 
+use crate::call_types::{Call, CallRegistryError, ConditionType};
 use crate::errors::OutcomeError;
 use crate::storage::{OracleVote, PriceObservation, SignedOutcome};
 use crate::{OutcomeManager, OutcomeManagerClient, MAX_ORACLES};
@@ -11,7 +15,13 @@ use crate::{OutcomeManager, OutcomeManagerClient, MAX_ORACLES};
 const CLAIM_PAYOUT_BUDGET_CPU: u64 = 10_000_000;
 const CLAIM_PAYOUT_BUDGET_MEM: u64 = 100_000;
 const BATCH_CLAIM_PAYOUTS_BUDGET_CPU: u64 = 40_000_000;
-const BATCH_CLAIM_PAYOUTS_BUDGET_MEM: u64 = 400_000;
+const BATCH_CLAIM_PAYOUTS_BUDGET_MEM: u64 = 2_000_000;
+
+#[contracttype]
+pub enum MockDataKey {
+    Call(u64),
+    StakerStake(u64, Address, u32),
+}
 
 #[contract]
 pub struct MockRegistry;
@@ -21,6 +31,42 @@ impl MockRegistry {
     pub fn resolve_call(_env: Env, _call_id: u64, _outcome: u32, _end_price: i128) {}
     pub fn release_escrow(_env: Env, _call_id: u64, _to: Address, _amount: i128) {}
     pub fn mark_settled(_env: Env, _call_id: u64) {}
+
+    pub fn set_mock_call(env: Env, call_id: u64, call: Call) {
+        env.storage().instance().set(&MockDataKey::Call(call_id), &call);
+    }
+
+    pub fn set_mock_staker_stake(
+        env: Env,
+        call_id: u64,
+        staker: Address,
+        position: u32,
+        amount: i128,
+    ) {
+        env.storage()
+            .instance()
+            .set(&MockDataKey::StakerStake(call_id, staker, position), &amount);
+    }
+
+    pub fn get_call(env: Env, call_id: u64) -> Result<Call, CallRegistryError> {
+        match env.storage().instance().get(&MockDataKey::Call(call_id)) {
+            Some(call) => Ok(call),
+            None => Err(CallRegistryError::CallNotFound),
+        }
+    }
+
+    pub fn get_staker_stake(
+        env: Env,
+        call_id: u64,
+        staker: Address,
+        position: u32,
+    ) -> Result<i128, CallRegistryError> {
+        Ok(env
+            .storage()
+            .instance()
+            .get(&MockDataKey::StakerStake(call_id, staker, position))
+            .unwrap_or(0))
+    }
 }
 
 fn gen_keypair(env: &Env) -> (BytesN<32>, BytesN<32>) {
@@ -97,6 +143,119 @@ fn assert_contract_error<T, E>(
         result,
         Err(Ok(err)) if err == soroban_sdk::Error::from_contract_error(expected as u32)
     ));
+}
+
+/// Store a realistic `Call` and per-staker stake in the MockRegistry so
+/// `claim_payout` / `batch_claim_payouts` can read them via cross-contract calls.
+fn prepare_mock_payout(
+    env: &Env,
+    registry_id: &Address,
+    call_id: u64,
+    staker: &Address,
+    staker_winning_stake: i128,
+    total_winning_stake: i128,
+    total_losing_stake: i128,
+) {
+    let mock_client = MockRegistryClient::new(env, registry_id);
+    let winning_outcome = 1u32;
+    let outcome_count = 2u32;
+
+    let mut outcome_stakes = Map::new(env);
+    outcome_stakes.set(winning_outcome, total_winning_stake);
+    outcome_stakes.set(2u32, total_losing_stake);
+
+    let mut winning_stakers = Map::new(env);
+    winning_stakers.set(staker.clone(), staker_winning_stake);
+    let losing_stakers: Map<Address, i128> = Map::new(env);
+
+    let mut stakes: Map<u32, Map<Address, i128>> = Map::new(env);
+    stakes.set(winning_outcome, winning_stakers);
+    stakes.set(2u32, losing_stakers);
+
+    let call = Call {
+        id: call_id,
+        creator: Address::generate(env),
+        stake_token: Address::generate(env),
+        stake_amount: total_winning_stake + total_losing_stake,
+        end_ts: 1000,
+        token_address: Address::generate(env),
+        pair_id: Bytes::from_slice(env, b"test"),
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
+        outcome_count,
+        outcome_stakes,
+        stakes,
+        outcome: winning_outcome,
+        start_price: 100,
+        end_price: 100,
+        condition: ConditionType::TargetAbove(100),
+        settled: true,
+        voided: false,
+        created_at: 500,
+        cancelled: false,
+        metadata_version: 0,
+        share_tokens: Map::new(env),
+    };
+
+    mock_client.set_mock_call(&call_id, &call);
+    mock_client.set_mock_staker_stake(&call_id, staker, &winning_outcome, &staker_winning_stake);
+}
+
+/// Multi-staker variant of `prepare_mock_payout` used by batch tests.
+fn prepare_mock_batch_payout(
+    env: &Env,
+    registry_id: &Address,
+    call_id: u64,
+    stakers: &[Address],
+    stakes: &[i128],
+    total_winning_stake: i128,
+    total_losing_stake: i128,
+) {
+    let mock_client = MockRegistryClient::new(env, registry_id);
+    let winning_outcome = 1u32;
+    let outcome_count = 2u32;
+
+    let mut outcome_stakes = Map::new(env);
+    outcome_stakes.set(winning_outcome, total_winning_stake);
+    outcome_stakes.set(2u32, total_losing_stake);
+
+    let mut winning_stakers: Map<Address, i128> = Map::new(env);
+    for (i, staker) in stakers.iter().enumerate() {
+        winning_stakers.set(staker.clone(), stakes[i]);
+    }
+    let losing_stakers: Map<Address, i128> = Map::new(env);
+
+    let mut stakes_map: Map<u32, Map<Address, i128>> = Map::new(env);
+    stakes_map.set(winning_outcome, winning_stakers);
+    stakes_map.set(2u32, losing_stakers);
+
+    let call = Call {
+        id: call_id,
+        creator: Address::generate(env),
+        stake_token: Address::generate(env),
+        stake_amount: total_winning_stake + total_losing_stake,
+        end_ts: 1000,
+        token_address: Address::generate(env),
+        pair_id: Bytes::from_slice(env, b"test"),
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
+        outcome_count,
+        outcome_stakes: outcome_stakes.clone(),
+        stakes: stakes_map,
+        outcome: winning_outcome,
+        start_price: 100,
+        end_price: 100,
+        condition: ConditionType::TargetAbove(100),
+        settled: true,
+        voided: false,
+        created_at: 500,
+        cancelled: false,
+        metadata_version: 0,
+        share_tokens: Map::new(env),
+    };
+
+    mock_client.set_mock_call(&call_id, &call);
+    for (i, staker) in stakers.iter().enumerate() {
+        mock_client.set_mock_staker_stake(&call_id, staker, &winning_outcome, &stakes[i]);
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -553,6 +712,10 @@ fn test_batch_claim_payouts_three_stakers() {
     let staker2 = Address::generate(&env);
     let staker3 = Address::generate(&env);
 
+    let staker_refs = [staker1.clone(), staker2.clone(), staker3.clone()];
+    let stake_vals = [50_i128, 30_i128, 20_i128];
+    prepare_mock_batch_payout(&env, &registry_id, 1u64, &staker_refs, &stake_vals, 100, 100);
+
     let mut stakers = Vec::new(&env);
     stakers.push_back(staker1.clone());
     stakers.push_back(staker2.clone());
@@ -785,7 +948,9 @@ fn test_fuzz_zero_staker_stake_panics() {
     let env = Env::default();
     let (_, registry_id, client) = setup_with_fee(&env, 0);
     let staker = Address::generate(&env);
-    let result = client.try_claim_payout(&registry_id, &1u64, &staker, &0, &1, &1);
+    // Staker has 0 stake on the winning outcome → NothingToClaim
+    prepare_mock_payout(&env, &registry_id, 1u64, &staker, 0, 1, 1);
+    let result = client.try_claim_payout(&registry_id, &1u64, &staker, &0_i128, &1_i128, &1_i128);
     assert_contract_error(result, OutcomeError::NothingToClaim);
 }
 
@@ -794,7 +959,8 @@ fn test_fuzz_zero_total_winning_panics() {
     let env = Env::default();
     let (_, registry_id, client) = setup_with_fee(&env, 0);
     let staker = Address::generate(&env);
-    let result = client.try_claim_payout(&registry_id, &1u64, &staker, &1, &0, &1);
+    prepare_mock_payout(&env, &registry_id, 1u64, &staker, 1, 0, 1);
+    let result = client.try_claim_payout(&registry_id, &1u64, &staker, &1_i128, &0_i128, &1_i128);
     assert_contract_error(result, OutcomeError::InvalidWinningStake);
 }
 
