@@ -4,15 +4,22 @@ import { useCallback } from 'react';
 const SORT_OPTIONS = ['Newest', 'Ending Soon', 'Most Staked', 'Trending'] as const;
 const STATUS_OPTIONS = ['All', 'Open', 'Resolved'] as const;
 
-export default function FilterBar() {
+interface FilterBarProps {
+  onFilterChange?: (filters: { status: string | null }) => void;
+}
+
+export default function FilterBar({ onFilterChange }: FilterBarProps) {
   const router = useRouter();
   const params = useSearchParams();
 
   const update = useCallback((key: string, value: string) => {
     const p = new URLSearchParams(params.toString());
-    value ? p.set(key, value) : p.delete(key);
+    value && value !== 'All' ? p.set(key, value) : p.delete(key);
+    if (key === 'status') {
+      onFilterChange?.({ status: value && value !== 'All' ? value.toLowerCase() : null });
+    }
     router.push(`?${p.toString()}`);
-  }, [params, router]);
+  }, [params, router, onFilterChange]);
 
   const activeCount = ['sort', 'status', 'token'].filter(k => params.get(k)).length;
 
@@ -27,7 +34,7 @@ export default function FilterBar() {
       </select>
       {activeCount > 0 && <span className="badge">{activeCount} active</span>}
       {activeCount > 0 && (
-        <button onClick={() => router.push(window.location.pathname)} aria-label="Clear filters">Clear All</button>
+        <button onClick={() => { router.push(window.location.pathname); onFilterChange?.({ status: null }); }} aria-label="Clear filters">Clear All</button>
       )}
     </div>
   );
